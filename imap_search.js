@@ -214,7 +214,7 @@ async function processUserImap(userId, imapConfig) {
   }
 }
 
-// Main execution function
+// Main execution function — does NOT close pool (pool is reused in loop mode)
 async function main() {
   if (!db) {
     console.error("❌ Database module not loaded. Cannot run search.");
@@ -256,8 +256,7 @@ async function main() {
 
   } catch (err) {
     console.error("❌ Main execution failed:", err.message);
-  } finally {
-    await db.pool.end();
+    // Do NOT call pool.end() here — pool stays alive for next loop run
   }
 }
 
@@ -281,11 +280,14 @@ async function runLoop() {
 
 // Run script if called directly
 if (require.main === module) {
-  // If --loop flag is passed or IMAP_LOOP=true env is set, run in loop mode
   const args = process.argv.slice(2);
   if (args.includes("--loop") || process.env.IMAP_LOOP === "true") {
+    // LOOP MODE: pool stays open forever, no pool.end()
     runLoop();
   } else {
-    main();
+    // SINGLE RUN MODE: close pool after done
+    main().finally(() => {
+      db && db.pool.end().catch(() => {});
+    });
   }
 }
