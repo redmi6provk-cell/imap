@@ -1,0 +1,10 @@
+{
+  "name": "vps-imap-scanner",
+  "version": "1.0.0",
+  "description": "Amazon IMAP Email Scanner for VPS",
+  "main": "imap_search.js",
+  "dependencies": {
+    "imapflow": "^1.3.3",
+    "pg": "^8.21.0"
+  }
+}
