@@ -1,0 +1,24 @@
+[
+  {
+    "id": 2,
+    "email": "johnsonsmithh880@GMAIL.COM",
+    "imap_host": "imap.gmail.com",
+    "imap_port": 993,
+    "imap_secure": true,
+    "imap_user": "redmi6provk@gmail.com",
+    "imap_password": "gawc vlwt tizs kbdu",
+    "created_at": "2026-06-04T02:34:10.139Z",
+    "amazon_password": "112233"
+  },
+  {
+    "id": 1,
+    "email": "vkkykh@kanuvk.com",
+    "imap_host": "imap.gmail.com",
+    "imap_port": 993,
+    "imap_secure": true,
+    "imap_user": "vkkykh@kanuvk.com",
+    "imap_password": "lwea zcdi nohp dhho",
+    "created_at": "2026-06-02T06:11:34.195Z",
+    "amazon_password": "112233"
+  }
+]
