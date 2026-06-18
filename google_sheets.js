@@ -101,8 +101,8 @@ async function deleteOrderRow(email, orderId) {
     // We will collect 0-indexed row indices that match either orderId (if valid) or email
     const indicesToDelete = [];
     
-    // Start scanning from row index 1 (row 0 is usually header)
-    for (let i = 1; i < rows.length; i++) {
+    // Start scanning from row index 0 (even if row 0 is header, it won't match real data)
+    for (let i = 0; i < rows.length; i++) {
       const rowEmail = rows[i][1] ? rows[i][1].trim().toLowerCase() : '';
       const rowOrderId = rows[i][3] ? rows[i][3].trim() : '';
 
@@ -156,7 +156,7 @@ async function updateAccountStatus(email, status, reason = '') {
     let matchedIndex = -1;
 
     // Scan for an existing row for this email to update its status
-    for (let i = 1; i < rows.length; i++) {
+    for (let i = 0; i < rows.length; i++) {
       const rowEmail = rows[i][1] ? rows[i][1].trim().toLowerCase() : '';
       if (rowEmail === email.trim().toLowerCase()) {
         matchedIndex = i;
