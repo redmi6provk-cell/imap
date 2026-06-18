@@ -1,0 +1,5 @@
+# Exclude sensitive credentials and settings
+google_credentials.json
+settings.json
+node_modules/
+*.log

@@ -34,102 +34,115 @@ pool.on('error', (err, client) => {
 
 // ==================== INIT ====================
 async function initDB() {
+  const maxRetries = 5;
+  let attempt = 0;
   let client;
-  try {
-    client = await pool.connect();
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS users (
-        id SERIAL PRIMARY KEY,
-        email VARCHAR(255) UNIQUE NOT NULL,
-        imap_host VARCHAR(255),
-        imap_port INTEGER DEFAULT 993,
-        imap_secure BOOLEAN DEFAULT true,
-        imap_user VARCHAR(255),
-        imap_password VARCHAR(255),
-        amazon_password VARCHAR(255),
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      );
-    `);
-    await client.query(`
-      ALTER TABLE users ADD COLUMN IF NOT EXISTS amazon_password VARCHAR(255);
-    `);
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS accounts (
-        id SERIAL PRIMARY KEY,
-        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
-        email VARCHAR(255) NOT NULL,
-        cookies JSONB,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE(user_id, email)
-      );
-    `);
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS no_cod_accounts (
-        id SERIAL PRIMARY KEY,
-        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
-        email VARCHAR(255) NOT NULL,
-        cookies JSONB,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE(user_id, email)
-      );
-    `);
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS success_accounts (
-        id SERIAL PRIMARY KEY,
-        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
-        email VARCHAR(255) NOT NULL,
-        cookies JSONB,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE(user_id, email)
-      );
-    `);
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS past_order (
-        id SERIAL PRIMARY KEY,
-        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
-        email VARCHAR(255) NOT NULL,
-        cookies JSONB,
-        order_id VARCHAR(100),
-        reason_text TEXT,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE(user_id, email)
-      );
-    `);
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS delivery_issue (
-        id SERIAL PRIMARY KEY,
-        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
-        email VARCHAR(255) NOT NULL,
-        cookies JSONB,
-        order_id VARCHAR(100),
-        reason_text TEXT,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE(user_id, email)
-      );
-    `);
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS purchase_limit (
-        id SERIAL PRIMARY KEY,
-        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
-        email VARCHAR(255) NOT NULL,
-        cookies JSONB,
-        order_id VARCHAR(100),
-        reason_text TEXT,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE(user_id, email)
-      );
-    `);
-    console.log("✅ Database tables initialized successfully.");
-  } catch (e) {
-    console.error("❌ Failed to initialize database:", e.message);
-  } finally {
-    if (client) {
-      client.release();
+
+  while (attempt < maxRetries) {
+    try {
+      client = await pool.connect();
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS users (
+          id SERIAL PRIMARY KEY,
+          email VARCHAR(255) UNIQUE NOT NULL,
+          imap_host VARCHAR(255),
+          imap_port INTEGER DEFAULT 993,
+          imap_secure BOOLEAN DEFAULT true,
+          imap_user VARCHAR(255),
+          imap_password VARCHAR(255),
+          amazon_password VARCHAR(255),
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+      `);
+      await client.query(`
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS amazon_password VARCHAR(255);
+      `);
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS accounts (
+          id SERIAL PRIMARY KEY,
+          user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+          email VARCHAR(255) NOT NULL,
+          cookies JSONB,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(user_id, email)
+        );
+      `);
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS no_cod_accounts (
+          id SERIAL PRIMARY KEY,
+          user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+          email VARCHAR(255) NOT NULL,
+          cookies JSONB,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(user_id, email)
+        );
+      `);
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS success_accounts (
+          id SERIAL PRIMARY KEY,
+          user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+          email VARCHAR(255) NOT NULL,
+          cookies JSONB,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(user_id, email)
+        );
+      `);
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS past_order (
+          id SERIAL PRIMARY KEY,
+          user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+          email VARCHAR(255) NOT NULL,
+          cookies JSONB,
+          order_id VARCHAR(100),
+          reason_text TEXT,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(user_id, email)
+        );
+      `);
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS delivery_issue (
+          id SERIAL PRIMARY KEY,
+          user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+          email VARCHAR(255) NOT NULL,
+          cookies JSONB,
+          order_id VARCHAR(100),
+          reason_text TEXT,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(user_id, email)
+        );
+      `);
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS purchase_limit (
+          id SERIAL PRIMARY KEY,
+          user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+          email VARCHAR(255) NOT NULL,
+          cookies JSONB,
+          order_id VARCHAR(100),
+          reason_text TEXT,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(user_id, email)
+        );
+      `);
+      console.log("✅ Database tables initialized successfully.");
+      return;
+    } catch (e) {
+      attempt++;
+      console.warn(`⚠️ Database connection attempt ${attempt}/${maxRetries} failed: ${e.message}`);
+      if (attempt >= maxRetries) {
+        console.error("❌ Failed to initialize database after maximum retries.");
+        throw e;
+      }
+      const delay = Math.min(1000 * Math.pow(2, attempt), 10000);
+      await new Promise(resolve => setTimeout(resolve, delay));
+    } finally {
+      if (client) {
+        client.release();
+      }
     }
   }
 }
@@ -256,9 +269,12 @@ async function addAccount(userId, email) {
   );
 }
 
-// Remove account
+// Remove account from all tables
 async function removeAccount(userId, email) {
-  await pool.query('DELETE FROM accounts WHERE user_id = $1 AND email = $2', [userId, email]);
+  const tables = ['accounts', 'success_accounts', 'no_cod_accounts', 'past_order', 'delivery_issue', 'purchase_limit'];
+  for (const tbl of tables) {
+    await pool.query(`DELETE FROM ${tbl} WHERE user_id = $1 AND email = $2`, [tbl, userId, email].slice(1));
+  }
 }
 
 // Get all accounts for a user

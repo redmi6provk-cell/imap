@@ -1,6 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const { ImapFlow } = require("imapflow");
+const googleSheets = require("./google_sheets");
 
 let db = null;
 if (fs.existsSync(path.join(__dirname, "db_config.json"))) {
@@ -180,6 +181,9 @@ async function processUserImap(userId, imapConfig) {
           console.log(`   Order ID: ${orderId}`);
           console.log(`   Reason: ${matchedReasonText}`);
 
+          // Delete the cancelled order row from the Google Sheet
+          await googleSheets.deleteOrderRow(matchedDbAccount.email, orderId);
+
           const currentTable = await findAccountTable(matchedDbAccount.email, userId);
           if (currentTable) {
             if (currentTable === cancellationType) {
@@ -214,7 +218,7 @@ async function processUserImap(userId, imapConfig) {
   }
 }
 
-// Main execution function — does NOT close pool (pool is reused in loop mode)
+// Main execution function
 async function main() {
   if (!db) {
     console.error("❌ Database module not loaded. Cannot run search.");
