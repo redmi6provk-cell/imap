@@ -59,10 +59,44 @@ async function getSheetValues(sheets) {
   return response.data.values || [];
 }
 
+// Helper to ensure headers exist on the sheet
+async function ensureHeaders(sheets) {
+  try {
+    const response = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: 'Sheet1!A1:H1',
+    });
+    const headerRow = response.data.values || [];
+    if (headerRow.length === 0 || !headerRow[0] || headerRow[0].length === 0) {
+      const headers = [[
+        'Timestamp',
+        'Email',
+        'Status',
+        'Order ID',
+        'Total Amount',
+        'Product ASIN / Qty',
+        'Reason / Error',
+        'IP Address'
+      ]];
+      await sheets.spreadsheets.values.update({
+        spreadsheetId,
+        range: 'Sheet1!A1:H1',
+        valueInputOption: 'USER_ENTERED',
+        resource: { values: headers }
+      });
+      console.log("📊 Google Sheets: Created header row.");
+    }
+  } catch (e) {
+    console.error("❌ Google Sheets: Failed to ensure headers:", e.message);
+  }
+}
+
 // 1. Append a new placed order (SUCCESS)
 async function appendOrderRow(email, status, orderId, totalAmount, productsStr, reason = '', ipAddress = '') {
   const sheets = getSheetsClient();
   if (!sheets) return;
+
+  await ensureHeaders(sheets);
 
   const timestamp = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
   const values = [[
@@ -152,6 +186,7 @@ async function updateAccountStatus(email, status, reason = '') {
   if (!sheets) return;
 
   try {
+    await ensureHeaders(sheets);
     const rows = await getSheetValues(sheets);
     let matchedIndex = -1;
 
