@@ -231,8 +231,73 @@ async function updateAccountStatus(email, status, reason = '') {
   }
 }
 
+
+// 4. Update order status and reason (used when order is CANCELLED or status changes)
+async function updateOrderStatus(email, orderId, status, reason = '') {
+  const sheets = getSheetsClient();
+  if (!sheets) return;
+
+  try {
+    await ensureHeaders(sheets);
+    const rows = await getSheetValues(sheets);
+    if (rows.length === 0) return;
+
+    let matchedIndex = -1;
+    // 1. Try matching by order ID first (most specific, newest first)
+    if (orderId && orderId !== 'UNKNOWN') {
+      for (let i = rows.length - 1; i >= 0; i--) {
+        const rowOrderId = rows[i][3] ? rows[i][3].trim() : '';
+        if (rowOrderId === orderId) {
+          matchedIndex = i;
+          break;
+        }
+      }
+    }
+    // 2. Fallback: match by email (alias) if not found by order ID (newest first)
+    if (matchedIndex === -1 && email) {
+      for (let i = rows.length - 1; i >= 0; i--) {
+        const rowEmail = rows[i][1] ? rows[i][1].trim().toLowerCase() : '';
+        if (rowEmail === email.trim().toLowerCase()) {
+          matchedIndex = i;
+          break;
+        }
+      }
+    }
+
+    const timestamp = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
+
+    if (matchedIndex !== -1) {
+      const range = `Sheet1!A${matchedIndex + 1}:H${matchedIndex + 1}`;
+      const values = [[
+        timestamp,
+        email,
+        status,
+        (orderId && orderId !== 'UNKNOWN') ? orderId : (rows[matchedIndex][3] || ''),
+        rows[matchedIndex][4] || '',
+        rows[matchedIndex][5] || '',
+        reason,
+        rows[matchedIndex][7] || ''
+      ]];
+
+      await sheets.spreadsheets.values.update({
+        spreadsheetId,
+        range,
+        valueInputOption: 'USER_ENTERED',
+        resource: { values }
+      });
+      console.log(`📊 Google Sheets: Updated status to ${status} for Email: ${email}, Order ID: ${orderId}`);
+    } else {
+      // Append a new row if not found
+      await appendOrderRow(email, status, orderId || '', '', '', reason, '');
+    }
+  } catch (e) {
+    console.error("❌ Google Sheets: Failed to update order status:", e.message);
+  }
+}
+
 module.exports = {
   appendOrderRow,
   deleteOrderRow,
-  updateAccountStatus
+  updateAccountStatus,
+  updateOrderStatus
 };

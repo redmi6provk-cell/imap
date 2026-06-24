@@ -12,6 +12,39 @@ if (fs.existsSync(path.join(__dirname, "db_config.json"))) {
   }
 }
 
+// Helper to decode quoted-printable encoding in emails
+function decodeQuotedPrintable(str) {
+  if (!str) return "";
+  return str
+    .replace(/=\r?\n/g, '') // Remove soft line breaks
+    .replace(/=([0-9A-F]{2})/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+}
+
+// Extract order ID by checking subject first, then body (avoiding headers)
+function extractOrderId(subject, rawEmailBody) {
+  // 1. Try matching in the decoded subject first (cleanest and most specific)
+  if (subject) {
+    const match = subject.match(/\b\d{3}-\d{7}-\d{7}\b/);
+    if (match) return match[0];
+  }
+
+  // 2. Fallback: search only within the body of the email, avoiding headers
+  if (rawEmailBody) {
+    let bodyOnly = rawEmailBody;
+    const parts = rawEmailBody.split(/\r?\n\r?\n/);
+    if (parts.length > 1) {
+      bodyOnly = parts.slice(1).join("\n");
+    }
+
+    // Decode quoted-printable in the body to handle any soft wraps or hex encoding
+    const decodedBody = decodeQuotedPrintable(bodyOnly);
+    const match = decodedBody.match(/\b\d{3}-\d{7}-\d{7}\b/);
+    if (match) return match[0];
+  }
+
+  return "UNKNOWN";
+}
+
 // Helper to normalize and get base email (ignoring Gmail plus-addressing aliases)
 function getBaseEmail(email) {
   if (!email) return "";
@@ -101,14 +134,50 @@ async function processUserImap(userId, imapConfig) {
         return;
       }
 
-      const totalEmails = client.mailbox.exists;
-      // Fetch the last 100 emails to find recent cancellations
-      const startRange = Math.max(1, totalEmails - 100);
-      const range = `${startRange}:${totalEmails}`;
-      console.log(` Reading last ${totalEmails - startRange + 1} email(s) in INBOX...`);
+      // Search for emails received today
+      const todayDate = new Date();
+      todayDate.setHours(0, 0, 0, 0); // Start of today (local time)
+      
+      console.log(` Searching for emails received today...`);
+      const searchResult = await client.search({ since: todayDate });
+      console.log(` Found ${searchResult.length} email(s) received today in INBOX.`);
 
+      if (searchResult.length === 0) {
+        console.log(" Done processing user. No emails today.");
+        return;
+      }
+
+      // Step 1: Fetch ONLY envelopes first (very fast!)
+      console.log(" Fetching envelopes...");
+      const envelopes = [];
+      for await (let msg of client.fetch(searchResult, { envelope: true })) {
+        envelopes.push(msg);
+      }
+
+      // Step 2: Filter for emails that are from Amazon and received today
+      const targetSeqNums = [];
+      for (const msg of envelopes) {
+        const from = msg.envelope?.from?.[0]?.address || "";
+        const subject = msg.envelope?.subject || "";
+        const isAmazon = from.toLowerCase().includes("amazon.in") || 
+                         from.toLowerCase().includes("amazon.com") || 
+                         subject.toLowerCase().includes("amazon");
+
+        if (isAmazon) {
+          targetSeqNums.push(msg.seq);
+        }
+      }
+
+      console.log(` Found ${targetSeqNums.length} Amazon email(s) today. Fetching full content...`);
+
+      if (targetSeqNums.length === 0) {
+        console.log(" Done processing user. No Amazon emails today.");
+        return;
+      }
+
+      // Step 3: Fetch full body source ONLY for these target Amazon emails
       const messages = [];
-      for await (let msg of client.fetch(range, { envelope: true, headers: true, source: true })) {
+      for await (let msg of client.fetch(targetSeqNums, { envelope: true, headers: true, source: true })) {
         messages.push(msg);
       }
 
@@ -141,7 +210,7 @@ async function processUserImap(userId, imapConfig) {
         const recipients = getRecipientEmails(msg);
         let matchedDbAccount = null;
         for (const recEmail of recipients) {
-          const matched = dbAccountsList.find(acc => getBaseEmail(acc.email) === getBaseEmail(recEmail));
+          const matched = dbAccountsList.find(acc => acc.email.toLowerCase().trim() === recEmail.toLowerCase().trim());
           if (matched) {
             matchedDbAccount = matched;
             break;
@@ -173,16 +242,15 @@ async function processUserImap(userId, imapConfig) {
         }
 
         if (cancellationType) {
-          // Extract order ID: \d{3}-\d{7}-\d{7}
-          const orderIdMatch = rawEmailBody.match(/\b\d{3}-\d{7}-\d{7}\b/);
-          const orderId = orderIdMatch ? orderIdMatch[0] : "UNKNOWN";
+          // Extract order ID using helper function
+          const orderId = extractOrderId(subject, rawEmailBody);
 
           console.log(` 🔍 Found Cancellation Email for ${matchedDbAccount.email}:`);
           console.log(`   Order ID: ${orderId}`);
           console.log(`   Reason: ${matchedReasonText}`);
 
-          // Delete the cancelled order row from the Google Sheet
-          await googleSheets.deleteOrderRow(matchedDbAccount.email, orderId);
+          // Update the order status to CANCELLED in the Google Sheet instead of deleting it
+          await googleSheets.updateOrderStatus(matchedDbAccount.email, orderId, 'CANCELLED', matchedReasonText);
 
           const currentTable = await findAccountTable(matchedDbAccount.email, userId);
           if (currentTable) {
