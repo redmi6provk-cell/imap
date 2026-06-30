@@ -39,6 +39,27 @@ function getSheetsClient() {
   }
 }
 
+// ── Retry helper: handles Google Sheets rate limits (429) from multiple PCs ──
+async function withRetry(fn, maxRetries = 5) {
+  let delay = 2000;
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (e) {
+      const isRateLimit = e?.code === 429 || e?.status === 429 ||
+                          (e?.message && (e.message.includes('429') || e.message.includes('Quota') || e.message.includes('rate')));
+      const isServerErr = e?.code === 503 || e?.status === 503;
+      if ((isRateLimit || isServerErr) && attempt < maxRetries) {
+        console.warn(`⚠️ Google Sheets rate limit hit. Retrying in ${delay/1000}s... (attempt ${attempt}/${maxRetries})`);
+        await new Promise(r => setTimeout(r, delay));
+        delay = Math.min(delay * 2, 30000); // exponential backoff, max 30s
+      } else {
+        throw e;
+      }
+    }
+  }
+}
+
 // Helper to get Sheet ID dynamically by name (defaults to 'Sheet1')
 async function getSheetId(sheets, sheetName = 'Sheet1') {
   try {
@@ -54,7 +75,7 @@ async function getSheetId(sheets, sheetName = 'Sheet1') {
 async function getSheetValues(sheets) {
   const response = await sheets.spreadsheets.values.get({
     spreadsheetId,
-    range: 'Sheet1!A:H', // A=Timestamp, B=Email, C=Status, D=Order ID, E=Total Amount, F=Product ASIN/Qty, G=Reason, H=IP
+    range: 'Sheet1!A:I', // A=Timestamp, B=Email, C=Status, D=Order ID, E=Total Amount, F=Product ASIN/Qty, G=Reason, H=IP, I=Name
   });
   return response.data.values || [];
 }
@@ -64,10 +85,10 @@ async function ensureHeaders(sheets) {
   try {
     const response = await sheets.spreadsheets.values.get({
       spreadsheetId,
-      range: 'Sheet1!A1:H1',
+      range: 'Sheet1!A1:I1',
     });
     const headerRow = response.data.values || [];
-    if (headerRow.length === 0 || !headerRow[0] || headerRow[0].length === 0) {
+    if (headerRow.length === 0 || !headerRow[0] || headerRow[0].length < 9) {
       const headers = [[
         'Timestamp',
         'Email',
@@ -76,15 +97,16 @@ async function ensureHeaders(sheets) {
         'Total Amount',
         'Product ASIN / Qty',
         'Reason / Error',
-        'IP Address'
+        'IP Address',
+        'Name'
       ]];
       await sheets.spreadsheets.values.update({
         spreadsheetId,
-        range: 'Sheet1!A1:H1',
+        range: 'Sheet1!A1:I1',
         valueInputOption: 'USER_ENTERED',
         resource: { values: headers }
       });
-      console.log("📊 Google Sheets: Created header row.");
+      console.log("📊 Google Sheets: Created/Updated header row with Column I.");
     }
   } catch (e) {
     console.error("❌ Google Sheets: Failed to ensure headers:", e.message);
@@ -92,7 +114,7 @@ async function ensureHeaders(sheets) {
 }
 
 // 1. Append a new placed order (SUCCESS)
-async function appendOrderRow(email, status, orderId, totalAmount, productsStr, reason = '', ipAddress = '') {
+async function appendOrderRow(email, status, orderId, totalAmount, productsStr, reason = '', ipAddress = '', addressName = '') {
   const sheets = getSheetsClient();
   if (!sheets) return;
 
@@ -107,19 +129,20 @@ async function appendOrderRow(email, status, orderId, totalAmount, productsStr, 
     totalAmount,
     productsStr,
     reason,
-    ipAddress
+    ipAddress,
+    addressName
   ]];
 
   try {
-    await sheets.spreadsheets.values.append({
+    await withRetry(() => sheets.spreadsheets.values.append({
       spreadsheetId,
-      range: 'Sheet1!A:H',
+      range: 'Sheet1!A:I',
       valueInputOption: 'USER_ENTERED',
       resource: { values },
-    });
+    }));
     console.log(`📊 Google Sheets: Appended row for ${email} with status ${status}`);
   } catch (e) {
-    console.error("❌ Google Sheets: Failed to append row:", e.message);
+    console.error("❌ Google Sheets: Failed to append row after retries:", e.message);
   }
 }
 
@@ -169,10 +192,10 @@ async function deleteOrderRow(email, orderId) {
       }
     }));
 
-    await sheets.spreadsheets.batchUpdate({
+    await withRetry(() => sheets.spreadsheets.batchUpdate({
       spreadsheetId,
       resource: { requests }
-    });
+    }));
 
     console.log(`📊 Google Sheets: Deleted ${indicesToDelete.length} row(s) for Email: ${email}, Order ID: ${orderId}`);
   } catch (e) {
@@ -203,7 +226,7 @@ async function updateAccountStatus(email, status, reason = '') {
 
     if (matchedIndex !== -1) {
       // Update existing row
-      const range = `Sheet1!A${matchedIndex + 1}:H${matchedIndex + 1}`;
+      const range = `Sheet1!A${matchedIndex + 1}:I${matchedIndex + 1}`;
       const values = [[
         timestamp,
         email,
@@ -212,19 +235,20 @@ async function updateAccountStatus(email, status, reason = '') {
         rows[matchedIndex][4] || '', // keep totalAmount
         rows[matchedIndex][5] || '', // keep products
         reason,
-        rows[matchedIndex][7] || ''  // keep IP
+        rows[matchedIndex][7] || '', // keep IP
+        rows[matchedIndex][8] || ''  // keep Name
       ]];
 
-      await sheets.spreadsheets.values.update({
+      await withRetry(() => sheets.spreadsheets.values.update({
         spreadsheetId,
         range,
         valueInputOption: 'USER_ENTERED',
         resource: { values }
-      });
+      }));
       console.log(`📊 Google Sheets: Updated status to ${status} for ${email}`);
     } else {
       // Append a new row if not found
-      await appendOrderRow(email, status, '', '', '', reason, '');
+      await appendOrderRow(email, status, '', '', '', reason, '', '');
     }
   } catch (e) {
     console.error("❌ Google Sheets: Failed to update status:", e.message);
@@ -267,7 +291,7 @@ async function updateOrderStatus(email, orderId, status, reason = '') {
     const timestamp = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
 
     if (matchedIndex !== -1) {
-      const range = `Sheet1!A${matchedIndex + 1}:H${matchedIndex + 1}`;
+      const range = `Sheet1!A${matchedIndex + 1}:I${matchedIndex + 1}`;
       const values = [[
         timestamp,
         email,
@@ -276,19 +300,20 @@ async function updateOrderStatus(email, orderId, status, reason = '') {
         rows[matchedIndex][4] || '',
         rows[matchedIndex][5] || '',
         reason,
-        rows[matchedIndex][7] || ''
+        rows[matchedIndex][7] || '',
+        rows[matchedIndex][8] || ''
       ]];
 
-      await sheets.spreadsheets.values.update({
+      await withRetry(() => sheets.spreadsheets.values.update({
         spreadsheetId,
         range,
         valueInputOption: 'USER_ENTERED',
         resource: { values }
-      });
+      }));
       console.log(`📊 Google Sheets: Updated status to ${status} for Email: ${email}, Order ID: ${orderId}`);
     } else {
       // Append a new row if not found
-      await appendOrderRow(email, status, orderId || '', '', '', reason, '');
+      await appendOrderRow(email, status, orderId || '', '', '', reason, '', '');
     }
   } catch (e) {
     console.error("❌ Google Sheets: Failed to update order status:", e.message);

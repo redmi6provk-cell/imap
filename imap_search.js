@@ -241,6 +241,14 @@ async function processUserImap(userId, imapConfig) {
           matchedReasonText = "Cancelled We are sorry there was an issue with your delivery.";
         }
 
+        let isDelivered = false;
+        // Check for delivered status in subject or body
+        if (/delivered/i.test(subject) || /has\s+been\s+delivered/i.test(rawEmailBody) || /delivered\s+to\s+your\s+address/i.test(rawEmailBody) || /delivered\s+on/i.test(rawEmailBody)) {
+          if (!cancellationType) {
+            isDelivered = true;
+          }
+        }
+
         if (cancellationType) {
           // Extract order ID using helper function
           const orderId = extractOrderId(subject, rawEmailBody);
@@ -269,6 +277,16 @@ async function processUserImap(userId, imapConfig) {
               });
               console.log(`   ✅ Successfully moved account from ${currentTable} to ${cancellationType}.`);
             }
+            countProcessed++;
+          }
+        } else if (isDelivered) {
+          const orderId = extractOrderId(subject, rawEmailBody);
+          if (orderId && orderId !== 'UNKNOWN') {
+            console.log(` 🔍 Found Delivery Confirmation Email for ${matchedDbAccount.email}:`);
+            console.log(`   Order ID: ${orderId}`);
+            
+            // Update Google Sheets to 'DELIVERED'
+            await googleSheets.updateOrderStatus(matchedDbAccount.email, orderId, 'DELIVERED', 'Your package has been delivered.');
             countProcessed++;
           }
         }
