@@ -71,17 +71,30 @@ async function getSheetId(sheets, sheetName = 'Sheet1') {
   }
 }
 
-// Helper to get all values of Sheet1
-async function getSheetValues(sheets) {
+// Local cache for sheet rows and headers check to prevent hitting Google API quotas
+let cachedRows = null;
+let lastFetchTime = 0;
+let headersEnsured = false;
+
+// Helper to get all values of Sheet1 with caching
+async function getSheetValues(sheets, forceRefresh = false) {
+  const now = Date.now();
+  // Cache the sheet rows for 10 seconds to avoid hitting API rate limits in tight loops
+  if (cachedRows && (now - lastFetchTime < 10000) && !forceRefresh) {
+    return cachedRows;
+  }
   const response = await sheets.spreadsheets.values.get({
     spreadsheetId,
     range: 'Sheet1!A:I', // A=Timestamp, B=Email, C=Status, D=Order ID, E=Total Amount, F=Product ASIN/Qty, G=Reason, H=IP, I=Name
   });
-  return response.data.values || [];
+  cachedRows = response.data.values || [];
+  lastFetchTime = now;
+  return cachedRows;
 }
 
 // Helper to ensure headers exist on the sheet
 async function ensureHeaders(sheets) {
+  if (headersEnsured) return;
   try {
     const response = await sheets.spreadsheets.values.get({
       spreadsheetId,
@@ -108,6 +121,7 @@ async function ensureHeaders(sheets) {
       });
       console.log("📊 Google Sheets: Created/Updated header row with Column I.");
     }
+    headersEnsured = true;
   } catch (e) {
     console.error("❌ Google Sheets: Failed to ensure headers:", e.message);
   }
@@ -140,6 +154,12 @@ async function appendOrderRow(email, status, orderId, totalAmount, productsStr, 
       valueInputOption: 'USER_ENTERED',
       resource: { values },
     }));
+    
+    // Add to local cache if active
+    if (cachedRows) {
+      cachedRows.push(values[0]);
+    }
+    
     console.log(`📊 Google Sheets: Appended row for ${email} with status ${status}`);
   } catch (e) {
     console.error("❌ Google Sheets: Failed to append row after retries:", e.message);
@@ -155,10 +175,7 @@ async function deleteOrderRow(email, orderId) {
     const rows = await getSheetValues(sheets);
     if (rows.length === 0) return;
 
-    // We will collect 0-indexed row indices that match either orderId (if valid) or email
     const indicesToDelete = [];
-    
-    // Start scanning from row index 0 (even if row 0 is header, it won't match real data)
     for (let i = 0; i < rows.length; i++) {
       const rowEmail = rows[i][1] ? rows[i][1].trim().toLowerCase() : '';
       const rowOrderId = rows[i][3] ? rows[i][3].trim() : '';
@@ -176,12 +193,16 @@ async function deleteOrderRow(email, orderId) {
       return;
     }
 
-    // Sort indices in descending order so that deleting from bottom-up doesn't affect the indices of preceding rows
-    indicesToDelete.sort((a, b) => b - a);
+    // Update local cache: remove rows from cache (bottom-up to preserve index mapping during loop)
+    const indicesSorted = [...indicesToDelete].sort((a, b) => b - a);
+    if (cachedRows) {
+      for (const idx of indicesSorted) {
+        cachedRows.splice(idx, 1);
+      }
+    }
 
     const sheetId = await getSheetId(sheets, 'Sheet1');
-
-    const requests = indicesToDelete.map(index => ({
+    const requests = indicesSorted.map(index => ({
       deleteDimension: {
         range: {
           sheetId,
@@ -213,7 +234,6 @@ async function updateAccountStatus(email, status, reason = '') {
     const rows = await getSheetValues(sheets);
     let matchedIndex = -1;
 
-    // Scan for an existing row for this email to update its status
     for (let i = 0; i < rows.length; i++) {
       const rowEmail = rows[i][1] ? rows[i][1].trim().toLowerCase() : '';
       if (rowEmail === email.trim().toLowerCase()) {
@@ -225,18 +245,17 @@ async function updateAccountStatus(email, status, reason = '') {
     const timestamp = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
 
     if (matchedIndex !== -1) {
-      // Update existing row
       const range = `Sheet1!A${matchedIndex + 1}:I${matchedIndex + 1}`;
       const values = [[
         timestamp,
         email,
         status,
-        rows[matchedIndex][3] || '', // keep orderId
-        rows[matchedIndex][4] || '', // keep totalAmount
-        rows[matchedIndex][5] || '', // keep products
+        rows[matchedIndex][3] || '',
+        rows[matchedIndex][4] || '',
+        rows[matchedIndex][5] || '',
         reason,
-        rows[matchedIndex][7] || '', // keep IP
-        rows[matchedIndex][8] || ''  // keep Name
+        rows[matchedIndex][7] || '',
+        rows[matchedIndex][8] || ''
       ]];
 
       await withRetry(() => sheets.spreadsheets.values.update({
@@ -245,16 +264,20 @@ async function updateAccountStatus(email, status, reason = '') {
         valueInputOption: 'USER_ENTERED',
         resource: { values }
       }));
+      
+      // Update cache
+      if (cachedRows) {
+        cachedRows[matchedIndex] = values[0];
+      }
+      
       console.log(`📊 Google Sheets: Updated status to ${status} for ${email}`);
     } else {
-      // Append a new row if not found
       await appendOrderRow(email, status, '', '', '', reason, '', '');
     }
   } catch (e) {
     console.error("❌ Google Sheets: Failed to update status:", e.message);
   }
 }
-
 
 // 4. Update order status and reason (used when order is CANCELLED or status changes)
 async function updateOrderStatus(email, orderId, status, reason = '') {
@@ -267,7 +290,6 @@ async function updateOrderStatus(email, orderId, status, reason = '') {
     if (rows.length === 0) return;
 
     let matchedIndex = -1;
-    // 1. Try matching by order ID first (most specific, newest first)
     if (orderId && orderId !== 'UNKNOWN') {
       for (let i = rows.length - 1; i >= 0; i--) {
         const rowOrderId = rows[i][3] ? rows[i][3].trim() : '';
@@ -277,7 +299,6 @@ async function updateOrderStatus(email, orderId, status, reason = '') {
         }
       }
     }
-    // 2. Fallback: match by email (alias) if not found by order ID (newest first)
     if (matchedIndex === -1 && email) {
       for (let i = rows.length - 1; i >= 0; i--) {
         const rowEmail = rows[i][1] ? rows[i][1].trim().toLowerCase() : '';
@@ -310,9 +331,14 @@ async function updateOrderStatus(email, orderId, status, reason = '') {
         valueInputOption: 'USER_ENTERED',
         resource: { values }
       }));
+      
+      // Update cache
+      if (cachedRows) {
+        cachedRows[matchedIndex] = values[0];
+      }
+      
       console.log(`📊 Google Sheets: Updated status to ${status} for Email: ${email}, Order ID: ${orderId}`);
     } else {
-      // Append a new row if not found
       await appendOrderRow(email, status, orderId || '', '', '', reason, '', '');
     }
   } catch (e) {
